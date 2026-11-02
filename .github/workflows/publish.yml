@@ -1,0 +1,124 @@
+name: Publish npm package
+
+# Only a deliberate stable version-tag push may publish. Main pushes do not publish.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.event_name == 'push' && github.ref_type == 'tag' && !github.event.deleted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - name: Verify annotated tag, exact commit and manifests
+        run: |
+          node scripts/verify-release.mjs
+          test "$(git cat-file -t "$GITHUB_REF")" = tag
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "${GITHUB_REF}^{commit}")"
+      - run: npm ci
+      - run: npm run validate
+      - run: npm run pack:check
+      - run: npm audit --omit=dev --audit-level=moderate
+      - run: git diff --exit-code HEAD --
+
+  publish:
+    needs: validate
+    if: github.event_name == 'push' && github.ref_type == 'tag' && !github.event.deleted
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm install --global npm@11
+      - name: Verify annotated tag, exact commit and manifests
+        run: |
+          node scripts/verify-release.mjs
+          test "$(git cat-file -t "$GITHUB_REF")" = tag
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "${GITHUB_REF}^{commit}")"
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=moderate
+      - run: npm run pack:check
+      - run: git diff --exit-code HEAD --
+      - name: Pack the exact release artifact
+        id: pack
+        run: |
+          mkdir -p "$RUNNER_TEMP/telnyx-release"
+          npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP/telnyx-release" > "$RUNNER_TEMP/telnyx-release/pack.json"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { createHash } from 'node:crypto';
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const dir = path.join(process.env.RUNNER_TEMP, 'telnyx-release');
+          const raw = JSON.parse(fs.readFileSync(path.join(dir, 'pack.json'), 'utf8'));
+          const entries = Array.isArray(raw) ? raw : Object.values(raw);
+          const p = entries[0];
+          if (entries.length !== 1 || p.name !== pkg.name || p.version !== pkg.version || p.filename !== `comput-pi-telnyx-${pkg.version}.tgz`) throw new Error('Unexpected packed artifact');
+          const archive = path.join(dir, p.filename);
+          const bytes = fs.readFileSync(archive);
+          const integrity = `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
+          if (p.integrity !== integrity || p.shasum !== createHash('sha1').update(bytes).digest('hex')) throw new Error('Artifact integrity mismatch');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `archive=${archive}\nversion=${pkg.version}\n`);
+          console.log(`Prepared ${pkg.name}@${pkg.version}: ${integrity}`);
+          NODE
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Validate exact archive contents
+        env:
+          RELEASE_ARCHIVE: ${{ steps.pack.outputs.archive }}
+        run: node scripts/check-package.mjs "$RELEASE_ARCHIVE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-release-${{ github.ref_name }}
+          path: ${{ runner.temp }}/telnyx-release/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Publish exact artifact through npm Trusted Publishing
+        id: publish
+        env:
+          RELEASE_ARCHIVE: ${{ steps.pack.outputs.archive }}
+        run: >-
+          env -u NODE_AUTH_TOKEN -u NPM_TOKEN NPM_CONFIG_USERCONFIG=/dev/null
+          npm publish "$RELEASE_ARCHIVE" --registry=https://registry.npmjs.org/
+          --access public --provenance --ignore-scripts --fetch-retries=0
+      - name: Verify registry artifact and provenance linkage (read-only)
+        env:
+          RELEASE_ARCHIVE: ${{ steps.pack.outputs.archive }}
+          RELEASE_VERSION: ${{ steps.pack.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.pack.outputs.commit }}
+        run: node scripts/verify-published.mjs
+      - name: Do not replay uncertain publication
+        if: failure() && (steps.publish.outcome == 'success' || steps.publish.outcome == 'failure')
+        run: echo 'Publication was attempted. Inspect the registry and this run before acting; do not rerun publication, move the tag or reuse the version blindly.'
