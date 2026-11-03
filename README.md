@@ -29,7 +29,7 @@ Install from the public repository:
 pi install git:github.com/mbundgaard/pi-telnyx
 ```
 
-The npm package name is **`@comput/pi-telnyx`**. Once its first release is published:
+Or install the published npm package **`@comput/pi-telnyx`**:
 
 ```bash
 pi install npm:@comput/pi-telnyx
@@ -37,7 +37,7 @@ pi install npm:@comput/pi-telnyx
 
 For development, use `pi install --local /absolute/path/to/pi-telnyx`.
 
-Restart Pi or reload its extensions. The tested host is **Pi 1.4.0**, with Node **22.19+**, on Linux. Installation alone starts no listener or tunnel. Source availability does not imply that an npm release has been published.
+Restart Pi or reload its extensions. The tested host is **Pi 1.4.0**, with Node **22.19+**, on Linux. Installation alone starts no listener or tunnel.
 
 ## Configure Telnyx
 

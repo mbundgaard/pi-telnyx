@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 — Trusted Publishing
+
+- Prepare the patch release through the configured GitHub/npm Trusted Publisher with provenance and exact-artifact verification.
+- Update installation documentation now that the npm package is available.
+- Runtime behavior is unchanged from 0.2.0.
+
 ## 0.2.0 — pi-telnyx
 
 - Implement Telnyx Conversation Relay at WebSocket `/relay` for one explicitly mapped persistent Pi session.
